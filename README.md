@@ -105,7 +105,7 @@ fastest single-user decode we found that changes no weight and no acceptance rul
 | 2 | Vision tower and `embed_tokens` in host RAM via UVA | `--cpu-offload-gb 3 --cpu-offload-params visual embed_tokens` | exact | embedding op bit-identical on 10⁶ ids |
 | 3 | **C1**: PLE rows read through UVA straight from the tmpfs shards | `--engram-config '{"host_file_gather":true}'` + `VLLM_QWEN4EXP_PLE_FILE_UVA=1` | exact | 10⁶ rows equal to `preadv`; server bit-identical |
 | 4 | **F98**: MTP draft head limited to the first 98,304 vocabulary ids | `VLLM_QWEN4EXP_DRAFT_VOCAB=98304` | exact in distribution | greedy output bit-identical |
-| 5 | **G**: exact GDN state replay for speculative decoding (port of [vllm#58863](https://github.com/vllm-project/vllm/pull/58863) + [#59366](https://github.com/vllm-project/vllm/pull/59366)) | `--use-replayssm` + `VLLM_GDN_REPLAY_LIB=…/gdn_replay_C_120.so` | exact replay | 1000-step harness bit-identical; server bit-identical against the baseline run with `--block-size 3392` |
+| 5 | **G**: exact GDN state replay for speculative decoding (port of [vllm#58863](https://github.com/vllm-project/vllm/pull/58863) + [#59366](https://github.com/vllm-project/vllm/pull/59366); our exactness fix [adopted upstream](https://github.com/vllm-project/vllm/pull/58863/commits/514102a1db)) | `--use-replayssm` + `VLLM_GDN_REPLAY_LIB=…/gdn_replay_C_120.so` | exact replay | 1000-step harness bit-identical; server bit-identical against the baseline run with `--block-size 3392` |
 
 On top of these: MTP 3 tokens with the model's own BF16 MTP head, FP8 KV cache, `--max-num-batched-tokens 4096`.
 
@@ -128,13 +128,16 @@ Notes on each change:
 5. **G.** Three changes to the upstream PRs. With them the replay is bit-identical to the per-token kernel in our
    tests (1000-step harness, and greedy server output against the baseline):
    - record `decay = exp(g)` exactly as the kernel computes it, instead of `g`;
-   - commit sequentially, `h = fma(delta, k, h * decay)`, instead of the closed-form commit used upstream (its authors
-     describe it as within one BF16 ulp of the FP32 reference; we did not measure that form ourselves);
+   - commit sequentially, `h = fma(delta, k, h * decay)`, instead of the closed-form commit used upstream;
    - keep the fused CUDA decode kernel for pure decode steps (#58863 alone switches decode to Triton), loading the
      replay-enabled kernel from a separate extension.
 
    G raises the attention page to 3392 tokens, so the real prefill chunk is 3392 instead of 3200. That is the only
    difference from the baseline. Result: +11.5% KV.
+
+   **Adopted upstream in vllm-project/vllm#58863.** The first two changes are now in the PR, commit
+   [`514102a1db`](https://github.com/vllm-project/vllm/pull/58863/commits/514102a1db). Its kernel tests now require exact equality with the per-token states on GB10: the old
+   closed form failed 28 of 62 cases, the new commit passes all of them.
 
 Measured and rejected:
 
