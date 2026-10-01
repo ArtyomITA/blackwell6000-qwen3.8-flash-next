@@ -1,0 +1,894 @@
+diff -ruN -x '*.so' -x __pycache__ -x .git vllm-fase2g/vllm/parser/engine/incremental_lexer.py vllm-fase2gp/vllm/parser/engine/incremental_lexer.py
+--- vllm-fase2g/vllm/parser/engine/incremental_lexer.py	2026-10-01 01:51:13.195981604 +0000
++++ vllm-fase2gp/vllm/parser/engine/incremental_lexer.py	2026-10-01 07:28:31.165277993 +0000
+@@ -97,6 +97,9 @@
+         self,
+         terminals: list[TerminalDef] | LexerShape,
+         content_terminal: str = CONTENT_TERMINAL,
++        *,
++        fence_chars: frozenset[str] = frozenset(),
++        fence_terminal: str = "",
+     ) -> None:
+         if isinstance(terminals, LexerShape):
+             shape = terminals
+@@ -115,6 +118,12 @@
+         self._prefix_set = shape.prefix_set
+         self._literals_by_first = shape.literals_by_first
+ 
++        # Code-fence runs (opt-in). A run of fence characters at least three
++        # long is emitted as one token so the engine can compare the closing
++        # run against the opening length.
++        self._fence_chars = fence_chars
++        self._fence_terminal = fence_terminal
++
+     def reset(self) -> None:
+         self.buffer = ""
+         self._token_counts.clear()
+@@ -126,9 +135,14 @@
+         token_count: int = 0,
+     ) -> list[LexToken]:
+         char_token_counts = self._char_token_counts(text, token_texts, token_count)
+-        if not self.buffer and self._has_only_literals and self._literal_first_chars:
++        fence_chars = self._fence_chars
++        if (
++            not self.buffer
++            and self._has_only_literals
++            and (self._literal_first_chars or fence_chars)
++        ):
+             for ch in text:
+-                if ch in self._literal_first_chars:
++                if ch in self._literal_first_chars or ch in fence_chars:
+                     break
+             else:
+                 return [LexToken(self.content_terminal, text, sum(char_token_counts))]
+@@ -189,11 +203,41 @@
+         literals_by_first = self._literals_by_first
+         prefix_set = self._prefix_set
+ 
++        fence_chars = self._fence_chars
++        fence_terminal = self._fence_terminal
+         while self.buffer:
+-            if has_only_literals and first_chars:
++            if fence_chars and self.buffer[0] in fence_chars:
++                fence_char = self.buffer[0]
++                run_len = 1
++                while run_len < len(self.buffer) and self.buffer[run_len] == fence_char:
++                    run_len += 1
++                if run_len == len(self.buffer) and not final:
++                    # The run may still grow into a longer fence; wait.
++                    break
++                if run_len >= 3:
++                    tokens.append(
++                        LexToken(
++                            fence_terminal,
++                            self.buffer[:run_len],
++                            self._pop_token_count(run_len),
++                        )
++                    )
++                else:
++                    # Fewer than three fence characters: inline code.
++                    tokens.append(
++                        LexToken(
++                            content_terminal,
++                            self.buffer[:run_len],
++                            self._pop_token_count(run_len),
++                        )
++                    )
++                self.buffer = self.buffer[run_len:]
++                continue
++
++            if has_only_literals and (first_chars or fence_chars):
+                 has_potential = False
+                 for ch in self.buffer:
+-                    if ch in first_chars:
++                    if ch in first_chars or ch in fence_chars:
+                         has_potential = True
+                         break
+                 if not has_potential:
+@@ -274,7 +318,10 @@
+         buf = self.buffer
+         n = len(buf)
+         first_chars = self._literal_first_chars
++        fence_chars = self._fence_chars
+         for i in range(1, n):
++            if buf[i] in fence_chars:
++                return i
+             if buf[i] not in first_chars:
+                 continue
+             remaining = n - i
+diff -ruN -x '*.so' -x __pycache__ -x .git vllm-fase2g/vllm/parser/engine/parser_engine_config.py vllm-fase2gp/vllm/parser/engine/parser_engine_config.py
+--- vllm-fase2g/vllm/parser/engine/parser_engine_config.py	2026-10-01 01:51:13.195981604 +0000
++++ vllm-fase2gp/vllm/parser/engine/parser_engine_config.py	2026-10-01 07:28:31.165315170 +0000
+@@ -33,6 +33,8 @@
+     TOOL_NAME = auto()
+     TOOL_ARGS = auto()
+     TOOL_BETWEEN = auto()
++    FENCED = auto()
++    FENCED_REASONING = auto()
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -69,6 +71,8 @@
+             ParserState.REASONING: EventType.REASONING_CHUNK,
+             ParserState.TOOL_NAME: EventType.TOOL_NAME,
+             ParserState.TOOL_ARGS: EventType.ARG_VALUE_CHUNK,
++            ParserState.FENCED: EventType.TEXT_CHUNK,
++            ParserState.FENCED_REASONING: EventType.REASONING_CHUNK,
+         },
+     )
+ 
+@@ -109,6 +113,14 @@
+     # Reject tool calls whose names are absent from the request tools.
+     validate_tool_names: bool = False
+ 
++    # Opt-in markdown-style code fences. When fence_terminal is set the lexer
++    # emits one token per run of fence_characters and the engine keeps fenced
++    # spans out of the tool-call state machine.
++    fence_terminal: str | None = None
++
++    # Backtick and tilde, the CommonMark fence delimiters.
++    fence_characters: str = "\u0060~"
++
+     def terminal_literal(self, name: str) -> str | None:
+         """Canonical spelling of terminal *name*, or ``None`` if undeclared."""
+         value = self.terminals.get(name)
+diff -ruN -x '*.so' -x __pycache__ -x .git vllm-fase2g/vllm/parser/engine/streaming_parser_engine.py vllm-fase2gp/vllm/parser/engine/streaming_parser_engine.py
+--- vllm-fase2g/vllm/parser/engine/streaming_parser_engine.py	2026-10-01 01:51:13.195981604 +0000
++++ vllm-fase2gp/vllm/parser/engine/streaming_parser_engine.py	2026-10-01 07:28:31.165328601 +0000
+@@ -149,7 +149,16 @@
+             resolved_token_ids.values()
+         )
+ 
+-        self._lexer = IncrementalLexer(lexer_shape, content_terminal=CONTENT_TERMINAL)
++        self._fence_terminal = config.fence_terminal or ""
++        self._fence_chars = (
++            frozenset(config.fence_characters) if self._fence_terminal else frozenset()
++        )
++        self._lexer = IncrementalLexer(
++            lexer_shape,
++            content_terminal=CONTENT_TERMINAL,
++            fence_chars=self._fence_chars,
++            fence_terminal=self._fence_terminal,
++        )
+ 
+         self._tool_terminals: frozenset[str] = frozenset(
+             terminal
+@@ -218,6 +227,12 @@
+         self._message_header_buffer = ""
+         self._message_header_token_count = 0
+         self._in_skipped_tool_span = False
++        self._fence_char: str | None = None
++        self._fence_len = 0
++        self._fence_reasoning = False
++        self._fence_close_candidate = False
++        self._at_line_start = True
++        self._line_indent = 0
+         self._reset_args_state()
+         self._reset_array_state()
+ 
+@@ -236,6 +251,7 @@
+             and not self._lexer.buffer
+             and not self._scanner._deferred_terminals
+             and self._lexer._literal_first_chars.isdisjoint(delta_text)
++            and self._fence_chars.isdisjoint(delta_text)
+         ):
+             has_special = False
+             for tid in delta_token_ids:
+@@ -243,6 +259,8 @@
+                     has_special = True
+                     break
+             if not has_special:
++                self._advance_close_candidate(delta_text)
++                self._track_line(delta_text)
+                 events = self._emit_for_state(
+                     delta_text, token_count=len(delta_token_ids)
+                 )
+@@ -255,7 +273,7 @@
+             item = scanner_items[0]
+             lex_tokens = self._lexer.feed(item.text, item.token_texts, item.token_count)
+             if len(lex_tokens) == 1 and lex_tokens[0].terminal == CONTENT_TERMINAL:
+-                events = self._emit_for_state(
++                events = self._on_content(
+                     lex_tokens[0].value,
+                     token_count=lex_tokens[0].token_count,
+                 )
+@@ -307,6 +325,13 @@
+             self._args_buffer = ""
+             self._args_safe_end = 0
+ 
++        # Unterminated fences normalize back to their enclosing state; they
++        # never promote to a tool call.
++        if self._fence_close_candidate:
++            self._close_fence()
++        if self.state in (ParserState.FENCED, ParserState.FENCED_REASONING):
++            self._close_fence()
++
+         if self.state in (
+             ParserState.TOOL_PREAMBLE,
+             ParserState.TOOL_ARGS,
+@@ -409,6 +434,21 @@
+     def _on_terminal(
+         self, terminal: str, value: str, token_count: int = 0
+     ) -> list[SemanticEvent]:
++        if self._fence_terminal and terminal == self._fence_terminal:
++            self._advance_close_candidate(value)
++            return self._handle_fence(value, token_count)
++        if self.state == ParserState.FENCED_REASONING:
++            # fase2: the explicit end of reasoning (a transition whose only
++            # event is REASONING_END, i.e. </think>) also ends a fence left open
++            # inside it, so a real tool call after </think> is never swallowed.
++            # Tool-call markers inside the fence stay data, as upstream.
++            leave = self.config.transitions.get((ParserState.REASONING, terminal))
++            if leave is not None and tuple(leave.events) == (EventType.REASONING_END,):
++                self._close_fence()
++
++        self._advance_close_candidate(value)
++        self._track_line(value)
++
+         key = (self.state, terminal)
+         transition = self.config.transitions.get(key)
+ 
+@@ -513,8 +553,72 @@
+     def _on_content(self, text: str, token_count: int = 0) -> list[SemanticEvent]:
+         if not text:
+             return []
++        self._advance_close_candidate(text)
++        self._track_line(text)
+         return self._emit_for_state(text, token_count)
+ 
++    def _track_line(self, value: str) -> None:
++        """Track whether the stream sits at the start of a line."""
++        for ch in value:
++            if ch == "\n":
++                self._at_line_start = True
++                self._line_indent = 0
++            elif self._at_line_start and ch in " \t":
++                self._line_indent += 1 if ch == " " else 4
++                if self._line_indent > 3:
++                    self._at_line_start = False
++            else:
++                self._at_line_start = False
++
++    def _close_fence(self) -> None:
++        self.state = (
++            ParserState.REASONING if self._fence_reasoning else ParserState.CONTENT
++        )
++        self._fence_char = None
++        self._fence_len = 0
++        self._fence_reasoning = False
++        self._fence_close_candidate = False
++
++    def _advance_close_candidate(self, text: str) -> None:
++        """Confirm a closing fence once the rest of its line is whitespace."""
++        if not self._fence_close_candidate:
++            return
++        for ch in text:
++            if ch == "\n":
++                self._close_fence()
++                return
++            if ch not in " \t\r":
++                self._fence_close_candidate = False
++                return
++
++    def _handle_fence(self, value: str, token_count: int = 0) -> list[SemanticEvent]:
++        char = value[:1]
++        run_len = len(value)
++        at_line_start = self._at_line_start
++        self._track_line(value)
++
++        if self.state in (ParserState.FENCED, ParserState.FENCED_REASONING):
++            if (
++                at_line_start
++                and char == self._fence_char
++                and run_len >= self._fence_len
++            ):
++                self._fence_close_candidate = True
++            return self._emit_for_state(value, token_count)
++
++        # Only the plain text channels open a fence. A run inside a tool
++        # argument or a header is argument/header text, not markup.
++        if at_line_start and run_len >= 3 and self.state in self._PLAIN_STATES:
++            reasoning = self.state == ParserState.REASONING
++            self._fence_char = char
++            self._fence_len = run_len
++            self._fence_reasoning = reasoning
++            self.state = (
++                ParserState.FENCED_REASONING if reasoning else ParserState.FENCED
++            )
++            self._fence_close_candidate = False
++        return self._emit_for_state(value, token_count)
++
+     def _apply_transition(
+         self,
+         transition: Transition,
+diff -ruN -x '*.so' -x __pycache__ -x .git vllm-fase2g/vllm/parser/qwen3.py vllm-fase2gp/vllm/parser/qwen3.py
+--- vllm-fase2g/vllm/parser/qwen3.py	2026-10-01 01:51:13.195981604 +0000
++++ vllm-fase2gp/vllm/parser/qwen3.py	2026-10-01 09:46:49.112943044 +0000
+@@ -16,6 +16,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ import functools
+ import json
+ from typing import TYPE_CHECKING
+@@ -43,6 +44,9 @@
+ TOOL_CALL_START = "<tool_call>"
+ TOOL_CALL_END = "</tool_call>"
+ CHATML_TURN_BOUNDARIES = frozenset(("<|im_start|>", "<|im_end|>"))
++FENCE = "```"
++_FENCE_FIX = os.environ.get("VLLM_QWEN3_FENCE_FIX", "0") == "1"
++_NO_REASONING_TOOL = os.environ.get("VLLM_QWEN3_NO_REASONING_TOOL", "0") == "1"
+ FUNC_PREFIX = "<function="
+ FUNC_END = "</function>"
+ PARAM_START = "<parameter="
+@@ -137,10 +141,18 @@
+                 ParserState.CONTENT,
+                 (),
+             ),
+-            # Tool call directly from reasoning (implicit end)
+-            (ParserState.REASONING, "TOOL_START"): Transition(
+-                ParserState.TOOL_PREAMBLE,
+-                (EventType.REASONING_END, EventType.TOOL_CALL_START),
++            # Tool call directly from reasoning (implicit end). fase2: off with
++            # VLLM_QWEN3_NO_REASONING_TOOL=1, so <tool_call> written while
++            # reasoning stays reasoning text (ghost calls of the fence_spiega gate).
++            **(
++                {}
++                if _NO_REASONING_TOOL
++                else {
++                    (ParserState.REASONING, "TOOL_START"): Transition(
++                        ParserState.TOOL_PREAMBLE,
++                        (EventType.REASONING_END, EventType.TOOL_CALL_START),
++                    )
++                }
+             ),
+             # -- Tool call transitions --
+             (ParserState.CONTENT, "TOOL_START"): Transition(
+@@ -195,6 +207,12 @@
+                 (EventType.TOOL_CALL_START,),
+             ),
+         },
++        # Fenced code examples are kept out of the tool-call machine by the
++        # engine: it tracks the fence delimiter and opening length so only a
++        # matching run closes the fence.
++        # fase2: off unless VLLM_QWEN3_FENCE_FIX=1 (backport of vLLM #57553).
++        fence_terminal="FENCE" if _FENCE_FIX else None,
++        fence_characters=FENCE[0] + "~",
+         arg_converter=_qwen3_arg_converter,
+         stream_arg_deltas=True,
+         strip_trailing_reasoning_whitespace=False,
+diff -ruN -x __pycache__ vllm-fase2g/tests/parser/engine/test_qwen3_fenced_examples.py vllm-fase2gp/tests/parser/engine/test_qwen3_fenced_examples.py
+--- vllm-fase2g/tests/parser/engine/test_qwen3_fenced_examples.py	1970-01-01 00:00:00.000000000 +0000
++++ vllm-fase2gp/tests/parser/engine/test_qwen3_fenced_examples.py	2026-10-01 07:29:01.301192072 +0000
+@@ -0,0 +1,530 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Fenced code examples in Qwen3 output must stay content.
++
++A fenced example documents the tool call format itself, so the XML markers
++inside it are data, not calls (vLLM issue #57541).  Markdown/CommonMark
++fence rules matter here: the closing run must use the same delimiter
++character as the opener and be at least as long, it must sit at the start
++of a line (up to three spaces of indentation), and inline code spans must
++never open a block fence.  Fences that open inside the reasoning channel
++must stay in that channel.
++"""
++
++import json
++from unittest.mock import MagicMock
++
++import pytest
++
++from tests.parser.engine.conftest import make_mock_tokenizer
++from tests.parser.engine.streaming_helpers import (
++    collect_content,
++    collect_function_name,
++    collect_tool_arguments,
++    simulate_reasoning_streaming,
++    simulate_tool_streaming,
++)
++from vllm.parser.engine.parser_engine import ParserEngine
++from vllm.parser.qwen3 import (
++    FENCE,
++    TOOL_CALL_END,
++    TOOL_CALL_START,
++    qwen3_config,
++)
++
++# Built from pieces so the literal reasoning markers survive tooling.
++THINK_START = "<" + "think" + ">"
++THINK_END = "<" + "/think" + ">"
++
++TICK = FENCE[0]
++TILDE = "~" * 3
++FOUR_TICKS = FENCE + TICK
++FOUR_TILDES = TILDE + "~"
++
++CALL = (
++    "<tool_call>\n"
++    "<function=Bash>\n"
++    "<parameter=command>ls -la</parameter>\n"
++    "</function>\n"
++    "</tool_call>\n"
++)
++
++
++def bash_tool():
++    bash = MagicMock()
++    bash.function.name = "Bash"
++    return bash
++
++
++def chunks_for(text: str, chunk_size: int | None) -> list[str]:
++    if chunk_size is None:
++        return [text]
++    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
++
++
++@pytest.fixture
++def mock_tokenizer():
++    return make_mock_tokenizer(
++        {
++            TOOL_CALL_START: 100,
++            TOOL_CALL_END: 101,
++        }
++    )
++
++
++@pytest.fixture
++def parser(mock_tokenizer):
++    return ParserEngine(
++        mock_tokenizer,
++        parser_engine_config=qwen3_config(thinking=False),
++    )
++
++
++@pytest.fixture
++def thinking_parser(mock_tokenizer):
++    return ParserEngine(
++        mock_tokenizer,
++        parser_engine_config=qwen3_config(thinking=True),
++    )
++
++
++@pytest.fixture
++def parser_with_tools(mock_tokenizer):
++    return ParserEngine(
++        mock_tokenizer,
++        tools=[bash_tool()],
++        parser_engine_config=qwen3_config(thinking=False),
++    )
++
++
++FENCED_EXAMPLE = (
++    "Here is what a tool call looks like:\n"
++    "\n" + FENCE + "xml\n" + CALL + FENCE + "\n"
++    "\n"
++    "That is the format."
++)
++
++
++class TestFencedExamplesInContent:
++    """Fenced code examples in content must stay text (vLLM issue #57541)."""
++
++    def test_fenced_example_kept_as_content(self, parser, mock_request):
++        result = parser.extract_tool_calls(FENCED_EXAMPLE, mock_request)
++
++        assert result.tools_called is False
++        assert result.tool_calls == []
++        assert result.content == FENCED_EXAMPLE
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_fenced_example_streaming_kept_as_content(
++        self, parser, mock_request, chunk_size
++    ):
++        chunks = chunks_for(FENCED_EXAMPLE, chunk_size)
++        results = simulate_tool_streaming(parser, mock_request, chunks)
++
++        assert collect_content(results) == FENCED_EXAMPLE
++        assert collect_function_name(results) is None
++
++    def test_xml_without_fence_still_promotes_tool_call(self, parser, mock_request):
++        text = (
++            "Here is what a tool call looks like:\n"
++            "\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>ls -la</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert result.tool_calls[0].function.name == "Bash"
++
++    def test_real_tool_call_after_fenced_example(self, parser, mock_request):
++        text = (
++            "Here is what a tool call looks like:\n"
++            "\n" + FENCE + "xml\n"
++            "<tool_call>\n"
++            "<function=Example>\n"
++            "<parameter=x>1</parameter>\n"
++            "</function>\n"
++            "</tool_call>\n" + FENCE + "\n"
++            "\n"
++            "Now run it for real:\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>pwd</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert len(result.tool_calls) == 1
++        assert result.tool_calls[0].function.name == "Bash"
++        args = json.loads(result.tool_calls[0].function.arguments)
++        assert args == {"command": "pwd"}
++        assert FENCE + "xml" in result.content
++
++    def test_code_fence_inside_parameter_value_is_preserved(self, parser, mock_request):
++        text = (
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>echo " + TICK + "python" + TICK + " | cat</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        args = json.loads(result.tool_calls[0].function.arguments)
++        assert "python" in args["command"]
++
++    @pytest.mark.parametrize("fence", [FENCE, TILDE])
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_fenced_block_inside_parameter_value_is_preserved(
++        self, parser, mock_request, fence, chunk_size
++    ):
++        text = (
++            "<tool_call>\n"
++            "<function=write_file>\n"
++            "<parameter=content>\n" + fence + "python\n"
++            "print(1)\n" + fence + "\n"
++            "</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        results = simulate_tool_streaming(
++            parser, mock_request, chunks_for(text, chunk_size)
++        )
++
++        assert "print(1)" in collect_tool_arguments(results)
++
++    def test_fenced_example_after_think_end(self, thinking_parser, mock_request):
++        fenced = FENCE + "xml\ncode\n" + FENCE + "\n"
++        text = THINK_START + "\nreasoning here\n" + THINK_END + "\n" + fenced
++        result = thinking_parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.tool_calls == []
++        assert result.content == "\n" + fenced
++
++    def test_streaming_matches_non_streaming(self, parser, mock_request):
++        chunks = chunks_for(FENCED_EXAMPLE, 7)
++        results = simulate_tool_streaming(parser, mock_request, chunks)
++        assert collect_content(results) == FENCED_EXAMPLE
++        assert collect_function_name(results) is None
++
++
++class TestFenceDelimiters:
++    """Both backtick and tilde fences are recognized, and they do not mix."""
++
++    def test_tilde_fence_kept_as_content(self, parser, mock_request):
++        text = "Example:\n" + TILDE + "xml\n" + CALL + TILDE + "\ndone"
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_tilde_fence_streaming_kept_as_content(
++        self, parser, mock_request, chunk_size
++    ):
++        text = "Example:\n" + TILDE + "xml\n" + CALL + TILDE + "\ndone"
++        results = simulate_tool_streaming(
++            parser, mock_request, chunks_for(text, chunk_size)
++        )
++
++        assert collect_content(results) == text
++        assert collect_function_name(results) is None
++
++    def test_tilde_run_does_not_close_backtick_fence(self, parser, mock_request):
++        text = FENCE + "xml\n" + TILDE + "\n" + CALL + FENCE + "\ndone"
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    def test_backtick_run_does_not_close_tilde_fence(self, parser, mock_request):
++        text = TILDE + "xml\n" + FENCE + "\n" + CALL + TILDE + "\ndone"
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    def test_real_tool_call_after_tilde_fence(self, parser, mock_request):
++        text = (
++            TILDE + "xml\n" + CALL + TILDE + "\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>pwd</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert result.tool_calls[0].function.name == "Bash"
++
++
++class TestFenceLengths:
++    """A closing run must use the same delimiter and be at least as long."""
++
++    def test_shorter_inner_run_does_not_close_longer_fence(self, parser, mock_request):
++        text = (
++            "before\n"
++            + FOUR_TICKS
++            + "xml\n"
++            + FENCE
++            + "\n"
++            + CALL
++            + FOUR_TICKS
++            + "\nafter"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_longer_fence_streaming_kept_as_content(
++        self, parser, mock_request, chunk_size
++    ):
++        text = (
++            "before\n"
++            + FOUR_TICKS
++            + "xml\n"
++            + FENCE
++            + "\n"
++            + CALL
++            + FOUR_TICKS
++            + "\nafter"
++        )
++        results = simulate_tool_streaming(
++            parser, mock_request, chunks_for(text, chunk_size)
++        )
++
++        assert collect_content(results) == text
++        assert collect_function_name(results) is None
++
++    def test_longer_run_closes_shorter_fence(self, parser, mock_request):
++        text = (
++            "before\n" + FENCE + "xml\n" + FOUR_TICKS + "\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>pwd</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert result.tool_calls[0].function.name == "Bash"
++
++    def test_tilde_fence_lengths(self, parser, mock_request):
++        text = (
++            "before\n"
++            + FOUR_TILDES
++            + "xml\n"
++            + TILDE
++            + "\n"
++            + CALL
++            + FOUR_TILDES
++            + "\nafter"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++
++class TestLineAndIndentationRules:
++    """Fences need a line start; inline code must never open one."""
++
++    def test_three_space_indent_is_a_fence(self, parser, mock_request):
++        text = "   " + TILDE + "xml\n" + CALL + TILDE + "\ndone"
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    def test_four_space_indent_is_not_a_fence(self, parser, mock_request):
++        text = (
++            "    "
++            + TILDE
++            + "xml is indented code, not a fence\n"
++            + "<tool_call>\n"
++            + "<function=Bash>\n"
++            + "<parameter=command>pwd</parameter>\n"
++            + "</function>\n"
++            + "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert result.tool_calls[0].function.name == "Bash"
++
++    def test_inline_backticks_in_prose_do_not_open_fence(self, parser, mock_request):
++        text = (
++            "run " + TICK + "echo" + TICK + " then:\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>pwd</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert result.tool_calls[0].function.name == "Bash"
++
++    def test_inline_triple_backticks_do_not_open_fence(self, parser, mock_request):
++        text = (
++            "inline " + FENCE + "code" + FENCE + " then:\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>pwd</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is True
++        assert result.tool_calls[0].function.name == "Bash"
++
++    def test_closing_fence_with_trailing_text_does_not_close(
++        self, parser, mock_request
++    ):
++        text = (
++            FENCE + "xml\n" + CALL + FENCE + " trailing info\n" + CALL + FENCE + "\nend"
++        )
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_inline_code_streaming_still_promotes_real_call(
++        self, parser, mock_request, chunk_size
++    ):
++        text = (
++            "run " + TICK + "echo" + TICK + " then:\n"
++            "<tool_call>\n"
++            "<function=Bash>\n"
++            "<parameter=command>pwd</parameter>\n"
++            "</function>\n"
++            "</tool_call>"
++        )
++        results = simulate_tool_streaming(
++            parser, mock_request, chunks_for(text, chunk_size)
++        )
++
++        assert collect_function_name(results) == "Bash"
++
++
++class TestReasoningChannel:
++    """A fence opened in reasoning stays in reasoning and never promotes."""
++
++    REASONING_TEXT = (
++        "thinking about the format\n"
++        + FENCE
++        + "xml\n"
++        + CALL
++        + FENCE
++        + "\nstill thinking"
++        + THINK_END
++        + "answer"
++    )
++
++    def test_fenced_example_in_reasoning_stays_reasoning(
++        self, thinking_parser, mock_request
++    ):
++        reasoning, content = thinking_parser.extract_reasoning(
++            self.REASONING_TEXT, mock_request
++        )
++
++        assert content == "answer"
++        assert reasoning is not None
++        assert FENCE + "xml" in reasoning
++        assert "tool_call>\n<function" in reasoning
++
++    def test_fenced_example_in_reasoning_no_tool_call(
++        self, thinking_parser, mock_request
++    ):
++        result = thinking_parser.extract_tool_calls(self.REASONING_TEXT, mock_request)
++
++        assert result.tools_called is False
++        assert result.content is None or "function=Bash" not in result.content
++
++    def test_tilde_fence_in_reasoning_stays_reasoning(
++        self, thinking_parser, mock_request
++    ):
++        text = (
++            "thinking\n"
++            + TILDE
++            + "xml\n"
++            + CALL
++            + TILDE
++            + "\nmore"
++            + THINK_END
++            + "answer"
++        )
++        reasoning, content = thinking_parser.extract_reasoning(text, mock_request)
++
++        assert content == "answer"
++        assert reasoning is not None
++        assert TILDE + "xml" in reasoning
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_reasoning_fence_streaming_preserved(
++        self, thinking_parser, mock_request, chunk_size
++    ):
++        chunks = chunks_for(self.REASONING_TEXT, chunk_size)
++        reasoning, content = simulate_reasoning_streaming(thinking_parser, chunks)
++
++        assert content == "answer"
++        assert FENCE + "xml" in reasoning
++        assert "function=Bash" not in content
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_reasoning_fence_streaming_no_tool_call(
++        self, thinking_parser, mock_request, chunk_size
++    ):
++        chunks = chunks_for(self.REASONING_TEXT, chunk_size)
++        results = simulate_tool_streaming(thinking_parser, mock_request, chunks)
++
++        assert collect_function_name(results) is None
++
++
++class TestUnterminatedFence:
++    """An unterminated fence normalizes to its enclosing state at EOF."""
++
++    def test_unterminated_content_fence_stays_content(self, parser, mock_request):
++        text = "before\n" + TILDE + "xml\n" + CALL
++        result = parser.extract_tool_calls(text, mock_request)
++
++        assert result.tools_called is False
++        assert result.content == text
++
++    def test_unterminated_reasoning_fence_stays_reasoning(
++        self, thinking_parser, mock_request
++    ):
++        text = "thinking\n" + FENCE + "xml\n" + CALL
++        reasoning, content = thinking_parser.extract_reasoning(text, mock_request)
++
++        assert reasoning is not None
++        assert FENCE + "xml" in reasoning
++        assert content is None
++
++        result = thinking_parser.extract_tool_calls(text, mock_request)
++        assert result.tools_called is False
++
++    @pytest.mark.parametrize("chunk_size", [1, 7, None])
++    def test_unterminated_fence_streaming(self, parser, mock_request, chunk_size):
++        text = "before\n" + FENCE + "xml\n" + CALL
++        results = simulate_tool_streaming(
++            parser, mock_request, chunks_for(text, chunk_size)
++        )
++
++        assert collect_function_name(results) is None
++        assert collect_content(results) == text

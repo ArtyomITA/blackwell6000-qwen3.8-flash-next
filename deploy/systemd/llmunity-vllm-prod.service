@@ -1,0 +1,50 @@
+# Swift 1.5 Qwen3.8 Flash-Next NVFP4 su RTX PRO 6000 (Blackwell) - configurazione K3 del cantiere SM120 (1/10/2026):
+# MTP BF16 + vision ed embed_tokens in RAM (UVA) + replay GDN esatto + top-k deterministico (correzione di qualita')
+# + PLE via UVA senza attesa dell'host (C1) + draft sui primi 98.304 token.
+# 4 utenti con 227k di contesto ciascuno (KV 909.971 token), ~100 tok/s a testa con 4 utenti, 17/18 sui 6 difficili.
+# Il fix del parser per i blocchi ``` (#57553) NON e' attivo: il gate su K2 e' fallito (vedi LEGGIMI.md).
+# Copiare in /etc/systemd/system/, poi: systemctl daemon-reload && systemctl enable --now llmunity-vllm-prod
+[Unit]
+Description=vLLM Swift Flash-Next K3 (cantiere SM120)
+After=network-online.target llmunity-ple-stage.service
+Wants=network-online.target
+Requires=llmunity-ple-stage.service
+
+[Service]
+User=ec2-user
+WorkingDirectory=/mnt/llmunity-models
+LimitNOFILE=65535
+# C1 e la UVA di vision/embed tengono memoria pinned: senza questo limite la registrazione fallisce
+LimitMEMLOCK=infinity
+MemoryMax=12G
+MemorySwapMax=0
+Environment=HOME=/home/ec2-user
+Environment=CUDA_HOME=/usr/local/cuda
+Environment=PATH=/usr/local/cuda/bin:/mnt/llmunity-models/vllm-venv/bin:/usr/bin:/bin
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=PYTHONUNBUFFERED=1
+# albero di produzione = fork + patch K3 (worktree vllm-fase2g, lo stesso delle misure finali)
+Environment=PYTHONPATH=/mnt/llmunity-models/vllm-fase2g
+Environment=VLLM_QSA_DET_TOPK_LIB=/mnt/llmunity-models/fase2-build/topk/build/det_topk_C.so
+Environment=VLLM_GDN_REPLAY_LIB=/mnt/llmunity-models/fase2-build/g/build_120/gdn_replay_C_120.so
+Environment=VLLM_QWEN4EXP_PLE_FILE_UVA=1
+Environment=VLLM_QWEN4EXP_DRAFT_VOCAB=98304
+ExecStart=/mnt/llmunity-models/vllm-venv/bin/vllm serve /mnt/llmunity-models/d0xin-fp8ple-ramview \
+  --served-model-name qwen x --host 127.0.0.1 --port 30002 \
+  --load-format safetensors --tensor-parallel-size 1 \
+  --max-model-len 262144 --max-num-seqs 4 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.90 \
+  --kv-cache-memory-bytes 14495514624 --kv-cache-dtype fp8 \
+  --engram-config '{"host_file_gather":true}' --reasoning-parser qwen3 \
+  --chat-template /mnt/llmunity-models/prod-tests/chat-template-qwen3.8-unsloth.jinja \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --compilation-config '{"cudagraph_mode":"full_decode_only"}' --no-enable-flashinfer-autotune \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+  --cpu-offload-gb 3 --cpu-offload-params visual embed_tokens --use-replayssm
+Restart=on-failure
+RestartSec=30
+# dopo uno stop i pesi si leggono dall'EBS (gp3 ~125 MB/s): il caricamento puo' durare 15-20 min
+TimeoutStartSec=2400
+
+[Install]
+WantedBy=multi-user.target

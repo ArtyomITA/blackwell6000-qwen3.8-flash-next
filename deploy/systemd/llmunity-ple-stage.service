@@ -1,0 +1,20 @@
+# Prima di vLLM: copia la tabella PLE FP8 (48 GB) nella tmpfs /mnt/llmunity-ple-ram (riga tmpfs gia' in /etc/fstab).
+# ensure_d0xin_ple_ram.py controlla dimensioni e sha256 e copia solo gli shard che mancano (dopo uno stop: tutti).
+# Unita' separata e senza MemoryMax: le pagine della tmpfs vengono addebitate a chi le scrive, e i 12 GB di vLLM non
+# basterebbero.
+[Unit]
+Description=Stage Swift FP8 PLE in noswap RAM
+RequiresMountsFor=/mnt/llmunity-models /mnt/llmunity-ple-ram
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/mnt/llmunity-models
+ExecStart=/mnt/llmunity-models/vllm-venv/bin/python /mnt/llmunity-models/ensure_d0xin_ple_ram.py
+RemainAfterExit=yes
+# dall'EBS (gp3 ~125 MB/s) i 48 GB richiedono ~7 min
+TimeoutStartSec=1800
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
