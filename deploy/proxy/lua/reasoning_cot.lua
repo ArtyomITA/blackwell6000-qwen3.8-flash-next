@@ -1,5 +1,6 @@
 -- body_filter per /v1/chat/completions verso vLLM.
--- 1) vLLM manda il ragionamento nel campo "reasoning", Copilot legge "reasoning_content": lo rinomina.
+-- 1) vLLM manda il ragionamento nel campo "reasoning": lo rinomina in "reasoning_content" (VS Code legge entrambi,
+--    la rinomina non e' necessaria ma e' innocua).
 -- 2) Copilot (VS Code, issue microsoft/vscode #338819) rimanda il ragionamento nei turni successivi solo se il delta ha
 --    un id: aggiunge "cot_id" (uno per richiesta) accanto a ogni reasoning_content non nullo.
 -- Funziona sia in streaming (eventi SSE separati da riga vuota) sia nella risposta intera.

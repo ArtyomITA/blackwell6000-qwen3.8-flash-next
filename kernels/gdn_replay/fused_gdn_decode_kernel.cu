@@ -103,7 +103,7 @@ struct GdnDecodeStrides {
 };
 
 // RecoverSSM replay record: per slot, value head and window position,
-// [correction (V), normalized key (K), log decay (1)] in fp32.
+// [correction (V), normalized key (K), decay = exp(g) (1)] in fp32.
 struct GdnReplayRecord {
   float* data;
   int64_t slot;

@@ -51,10 +51,11 @@ On top of these: MTP 3 tokens with the model's own BF16 MTP head, FP8 KV cache, 
 Notes on each change:
 
 1. **Top-k (quality fix).** `persistent_topk`, the only top-k path on SM120, places results with `atomicAdd`. Identical
-   inputs can therefore select different KV blocks. We measured it in one server, with the same prompt and a cold
+   inputs can therefore end up with a different set or order of selected KV blocks. We measured it in one server, with the same prompt and a cold
    prefill: the logprob of the first generated token varied by up to 2.38 nat at 32k and 5.54 nat at 200k. A public
-   write-up reports the same effect on Flash-Next: [docai.hu](https://docai.hu/en/blog/qwen38-flash-next-nondeterministic-vllm-kernel).
-   The backport is loaded as a separate extension. It costs +0.5% prefill at 200k, and decode stays within noise.
+   write-up reports the same effect on Flash-Next (GB10, fixed there with an exact `torch.topk` path instead):
+   [docai.hu](https://docai.hu/en/blog/qwen38-flash-next-nondeterministic-vllm-kernel). We did not run an accuracy A/B
+   with and without the fix; every K run already has it. The backport is loaded as a separate extension. It costs +0.5% prefill at 200k, and decode stays within noise.
 2. **Vision and embeddings via UVA.** The values must be **space-separated**: with `visual,embed_tokens` (comma) nothing
    is offloaded. This frees about 2 GiB of VRAM, which goes to the KV cache.
 3. **C1.** Replaces a per-row `os.preadv` loop plus `stream.synchronize()` with a Triton gather over host memory
@@ -63,10 +64,13 @@ Notes on each change:
    30.6 → 1.6 ms.
 4. **F98.** The draft only proposes; the target verifies, so the output distribution does not change. N = 65,536 was
    too small: the token ```` ``` ```` has id 71,093.
-5. **G.** Three changes to the upstream PRs, without which the replay is not bit-exact:
-   - record `decay = exp(g)` exactly as the kernel computes it;
-   - commit sequentially, `h = fma(delta, k, h * decay)`, instead of the closed form (which is 1 ulp off);
-   - take the CUDA replay kernel from a separate extension.
+5. **G.** Three changes to the upstream PRs. With them the replay is bit-identical to the per-token kernel in our
+   tests (1000-step harness, and greedy server output against the baseline):
+   - record `decay = exp(g)` exactly as the kernel computes it, instead of `g`;
+   - commit sequentially, `h = fma(delta, k, h * decay)`, instead of the closed-form commit used upstream (its authors
+     describe it as within one BF16 ulp of the FP32 reference; we did not measure that form ourselves);
+   - keep the fused CUDA decode kernel for pure decode steps (#58863 alone switches decode to Triton), loading the
+     replay-enabled kernel from a separate extension.
 
    G raises the attention page to 3392 tokens, so the real prefill chunk is 3392 instead of 3200. That is the only
    difference from the baseline. Result: +11.5% KV.
@@ -200,8 +204,10 @@ Italian comments, so treat them as a reference rather than a test suite:
 
 [deploy/proxy/](deploy/proxy/) is an OpenResty config with two Lua filters:
 - `force_modelfile_params.lua` forces the sampling parameters: temperature 1.0, top_p 0.95, top_k 20, penalties 0.
-- `reasoning_cot.lua` renames vLLM's `reasoning` to `reasoning_content` and adds a `cot_id`. Without an id, Copilot does
-  not send the reasoning back in later turns ([microsoft/vscode#338819](https://github.com/microsoft/vscode/issues/338819)).
+- `reasoning_cot.lua` adds a `cot_id` to every reasoning delta. Without an id, Copilot up to VS Code 1.140 does not send
+  the reasoning back in later tool-call rounds ([microsoft/vscode#338819](https://github.com/microsoft/vscode/issues/338819),
+  fixed for 1.141). It also renames `reasoning` to `reasoning_content`; VS Code reads both names, so that part is
+  harmless but not required.
 
 [deploy/copilot/chatLanguageModels.example.json](deploy/copilot/chatLanguageModels.example.json) is the matching VS Code
 entry:

@@ -22,3 +22,6 @@ Worktree sulla macchina (niente push):
 
 Modifiche mie a #58863/#59366 per G: record = `decay = exp(g)` gia' calcolato dal kernel (non `g`), commit sequenziale
 `h = fma(delta, k, h * decay)` al posto della forma chiusa, op replay presa dall'estensione separata.
+
+Nota (1/10 sera): `G_cuda_59366_gdn_kernel.diff` e' il csrc di #59366 non modificato. La nostra unica modifica CUDA e' in
+`kernels/gdn_replay/fused_gdn_decode_kernel.cu`: il record salva `shared_decay[t]` (= exp(g)) invece di `g`.
