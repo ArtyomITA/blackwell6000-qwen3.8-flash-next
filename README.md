@@ -2,30 +2,33 @@
 
 # Blackwell 6000 + qwen 3.8 flash next
 
-**Swift 1.5 Qwen3.8 Flash-Next on a single RTX PRO 6000 Blackwell with vLLM.**
+**Qwen3.8 Flash-Next and its Swift 1.5 fine-tune on a single RTX PRO 6000 Blackwell with vLLM.**
 4 users with 227k tokens of context each, about 100 tok/s per user, exact kernels and a fix for a real determinism bug.
 
 [![vLLM](https://img.shields.io/badge/vLLM-Trosfy_fork-0f766e)](https://github.com/Trosfy/vllm)
 [![GPU](https://img.shields.io/badge/GPU-RTX_PRO_6000_%28SM120%29-76b900?logo=nvidia&logoColor=white)](#requirements)
-[![Model](https://img.shields.io/badge/model-Swift_1.5_Qwen3.8_Flash--Next_NVFP4-7c3aed)](https://huggingface.co/d0xin/Swift-1.5-Qwen3.8-Flash-Next-NVFP4-FP8PLE)
+[![Model](https://img.shields.io/badge/model-Qwen3.8_Flash--Next_%7C_Swift_1.5_%28NVFP4%29-7c3aed)](#requirements)
 [![Context](https://img.shields.io/badge/context-4x227k_tokens-2563eb)](#results)
-[![Speed](https://img.shields.io/badge/decode-100_tok%2Fs_per_user-2563eb)](#results)
+[![Speed](https://img.shields.io/badge/decode-100_tok%2Fs_per_user_x4-2563eb)](#results)
+[![Peak](https://img.shields.io/badge/peak-186.5_tok%2Fs_single_user-2563eb)](#public-numbers-on-the-same-gpu)
 [![Coding](https://img.shields.io/badge/hard_coding-17%2F18-16a34a)](#results)
 [![MTP heads](https://img.shields.io/badge/MTP_heads-Hugging_Face-ffcc4d?logo=huggingface&logoColor=black)](https://huggingface.co/adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP-for-GGUF-and-NVFP4)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 [Results](#results) · [What K3 changes](#what-k3-changes) · [Install](#install) · [Tests](#tests-and-gates) · [Known issues](#known-issues) · [Copilot](#github-copilot-vs-code-in-front-of-it)
 
-| **909,971** | **100 tok/s** | **17/18** | **+0.5%** |
-|:---:|:---:|:---:|:---:|
-| KV tokens, 4 × 227.5k | per user, 4 users at once | hard LiveCodeBench v6, 100k budget | prefill cost of the determinism fix |
+| **186.5 tok/s** | **100 tok/s** | **909,971** | **17/18** | **+0.5%** |
+|:---:|:---:|:---:|:---:|:---:|
+| peak, single user, lossless | per user, 4 users at once | KV tokens, 4 × 227.5k | hard LiveCodeBench v6, 100k budget | prefill cost of the determinism fix |
 
 </div>
 
 ## What this is
 
-Serving **Swift 1.5 Qwen3.8 Flash-Next** (NVFP4 weights, FP8 PLE table) with vLLM on **one RTX PRO 6000 Blackwell
-(96 GB, SM120)**, an AWS g7e.2xlarge. Every optimization here is exact (bit-identical output against the baseline), and
+Serving **Qwen3.8 Flash-Next** and its **Swift 1.5** fine-tune (NVFP4 weights, FP8 PLE table) with vLLM on **one RTX PRO
+6000 Blackwell (96 GB, SM120)**, an AWS g7e.2xlarge. The patches work at the architecture level, so they apply to both:
+Swift 1.5 has the same layers, the same PLE table and the same MTP head as the base model. All the K3 numbers below were
+measured with Swift 1.5. Every optimization here is exact (bit-identical output against the baseline), and
 one change fixes a real determinism bug in the sparse-attention indexer that was there before.
 
 The final configuration is called **K3**. It was chosen from three candidates measured under the same protocol, and it
@@ -67,6 +70,22 @@ temperature 1.0: the 1-user decode step is identical to the configuration withou
 MTP acceptance, not a cost of the patch.
 
 Full numbers, commands and logs for the three candidates (Italian): [docs/FINALE_it.md](docs/FINALE_it.md).
+
+### Public numbers on the same GPU
+
+Other people have published decode speeds for this model on an RTX PRO 6000. Engines, checkpoints, context sizes and
+methods all differ, so read this as orientation, not as a ranking.
+
+| setup | engine | 1 user (tok/s) | 4 users, per user (tok/s) | KV / context | notes |
+|---|---|---:|---:|---|---|
+| **K3, this repo** | vLLM (Trosfy fork) + these patches | **171.7-186.5** | **100.0** | 910k tokens, 4 × 227.5k | lossless, temperature 1.0, outputs bit-identical to the unpatched baseline |
+| [gabrielolympie/sglang-flashnext-sm120](https://github.com/gabrielolympie/sglang-flashnext-sm120) | SGLang fork | 231 (median) | 155-164 | 572k tokens | 1-user figure with the MTP acceptance threshold relaxed to 0.3 (exact only at temperature 0), FP8 weights at runtime |
+| [SGLang discussion #36891](https://github.com/sgl-project/sglang/discussions/36891) | SGLang | 171 | ~107 | n/a | |
+| [d0xin FP8 PLE card](https://huggingface.co/d0xin/Swift-1.5-Qwen3.8-Flash-Next-NVFP4-FP8PLE) | SGLang (Pennyroyal) | 133 (median, fixed 4096-token generation) | n/a | 262k native | 174.7 effective tok/s on an agentic workload |
+| [MarcoPizeta/flash-next-rtxpro6000-bench](https://github.com/MarcoPizeta/flash-next-rtxpro6000-bench) | vLLM | 140.5 at 8k | ~38 at 32k | n/a | |
+
+Among the setups that publish it, K3 has the largest KV budget (910k tokens, all four users resident in VRAM), and its
+single-user speed is at the top of the lossless numbers we found. The only higher figure (231) relaxes MTP acceptance.
 
 ## What K3 changes
 
