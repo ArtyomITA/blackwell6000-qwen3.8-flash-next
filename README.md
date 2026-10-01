@@ -10,7 +10,7 @@ is the production configuration on that machine (October 2026).
 
 Everything here is a patch on top of an existing vLLM fork plus two small CUDA extensions. No model weights are
 included. The MTP draft head we used (BF16), the FP8 variant and a GGUF for llama.cpp are on Hugging Face:
-[adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP](https://huggingface.co/adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP).
+[adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP-for-GGUF-NVFP4](https://huggingface.co/adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP-for-GGUF-NVFP4).
 
 ## Results
 
