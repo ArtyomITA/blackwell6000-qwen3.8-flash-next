@@ -79,13 +79,23 @@ methods all differ, so read this as orientation, not as a ranking.
 | setup | engine | 1 user (tok/s) | 4 users, per user (tok/s) | KV / context | notes |
 |---|---|---:|---:|---|---|
 | **K3, this repo** | vLLM (Trosfy fork) + these patches | **171.7-186.5** | **100.0** | 910k tokens, 4 × 227.5k | lossless, temperature 1.0, outputs bit-identical to the unpatched baseline |
-| [gabrielolympie/sglang-flashnext-sm120](https://github.com/gabrielolympie/sglang-flashnext-sm120) | SGLang fork | 231 (median) | 155-164 | 572k tokens | 1-user figure with the MTP acceptance threshold relaxed to 0.3 (exact only at temperature 0), FP8 weights at runtime |
+| [gabrielolympie/sglang-flashnext-sm120](https://github.com/gabrielolympie/sglang-flashnext-sm120) | SGLang fork | 231 (median) with relaxed MTP acceptance; 203 with exact acceptance | 155-164 | 572k tokens (185 tok/s at 1 user with a 786k profile) | dense BF16 layers and lm_head served as FP8 weights at runtime (W8A16), in both figures |
 | [SGLang discussion #36891](https://github.com/sgl-project/sglang/discussions/36891) | SGLang | 171 | ~107 | n/a | |
 | [d0xin FP8 PLE card](https://huggingface.co/d0xin/Swift-1.5-Qwen3.8-Flash-Next-NVFP4-FP8PLE) | SGLang (Pennyroyal) | 133 (median, fixed 4096-token generation) | n/a | 262k native | 174.7 effective tok/s on an agentic workload |
 | [MarcoPizeta/flash-next-rtxpro6000-bench](https://github.com/MarcoPizeta/flash-next-rtxpro6000-bench) | vLLM | 140.5 at 8k | ~38 at 32k | n/a | |
 
-Among the setups that publish it, K3 has the largest KV budget (910k tokens, all four users resident in VRAM), and its
-single-user speed is at the top of the lossless numbers we found. The only higher figure (231) relaxes MTP acceptance.
+**What "lossless" means for K3.** No weight is converted or re-quantized: the NVFP4 experts and the BF16 dense layers
+are used exactly as the checkpoint ships them. The MTP acceptance rule is the standard one, so the draft never changes
+what gets sampled. Every patch has a bit-exact gate, and the server output is bit-identical to the unpatched baseline run
+with the same attention page size. The FP8 PLE table and the FP8 KV cache are the same in the baseline.
+
+The higher single-user numbers above trade some of that away. 231 tok/s comes from relaxing MTP acceptance to 0.3, which
+accepts draft tokens the target would not have sampled, so it is exact only at temperature 0. Both 231 and 203 serve the
+dense BF16 layers and the lm_head as FP8 weights, an approximation of the original weights. Those are reasonable choices
+for speed, but they are not what this repo does.
+
+Among the setups that publish it, K3 has the largest KV budget for four users (910k tokens, all resident in VRAM), and the
+fastest single-user decode we found that changes no weight and no acceptance rule.
 
 ## What K3 changes
 
