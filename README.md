@@ -1,16 +1,48 @@
+<div align="center">
+
 # Blackwell 6000 + qwen 3.8 flash next
 
+**Swift 1.5 Qwen3.8 Flash-Next on a single RTX PRO 6000 Blackwell with vLLM.**
+4 users with 227k tokens of context each, about 100 tok/s per user, exact kernels and a fix for a real determinism bug.
+
+[![vLLM](https://img.shields.io/badge/vLLM-Trosfy_fork-0f766e)](https://github.com/Trosfy/vllm)
+[![GPU](https://img.shields.io/badge/GPU-RTX_PRO_6000_%28SM120%29-76b900?logo=nvidia&logoColor=white)](#requirements)
+[![Model](https://img.shields.io/badge/model-Swift_1.5_Qwen3.8_Flash--Next_NVFP4-7c3aed)](https://huggingface.co/d0xin/Swift-1.5-Qwen3.8-Flash-Next-NVFP4-FP8PLE)
+[![Context](https://img.shields.io/badge/context-4x227k_tokens-2563eb)](#results)
+[![Speed](https://img.shields.io/badge/decode-100_tok%2Fs_per_user-2563eb)](#results)
+[![Coding](https://img.shields.io/badge/hard_coding-17%2F18-16a34a)](#results)
+[![MTP heads](https://img.shields.io/badge/MTP_heads-Hugging_Face-ffcc4d?logo=huggingface&logoColor=black)](https://huggingface.co/adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP-for-GGUF-and-NVFP4)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+[Results](#results) · [What K3 changes](#what-k3-changes) · [Install](#install) · [Tests](#tests-and-gates) · [Known issues](#known-issues) · [Copilot](#github-copilot-vs-code-in-front-of-it)
+
+| **909,971** | **100 tok/s** | **17/18** | **+0.5%** |
+|:---:|:---:|:---:|:---:|
+| KV tokens, 4 × 227.5k | per user, 4 users at once | hard LiveCodeBench v6, 100k budget | prefill cost of the determinism fix |
+
+</div>
+
+## What this is
+
 Serving **Swift 1.5 Qwen3.8 Flash-Next** (NVFP4 weights, FP8 PLE table) with vLLM on **one RTX PRO 6000 Blackwell
-(96 GB, SM120)**. On an AWS g7e.2xlarge it handles **4 concurrent users with 227k tokens of context each** at about
-**100 tok/s per user**. The optimizations are exact (bit-identical output), plus one fix for a real determinism bug in
-the sparse-attention indexer.
+(96 GB, SM120)**, an AWS g7e.2xlarge. Every optimization here is exact (bit-identical output against the baseline), and
+one change fixes a real determinism bug in the sparse-attention indexer that was there before.
 
 The final configuration is called **K3**. It was chosen from three candidates measured under the same protocol, and it
-is the production configuration on that machine (October 2026).
+is the production configuration on that machine (October 2026), serving a small team through GitHub Copilot.
 
 Everything here is a patch on top of an existing vLLM fork plus two small CUDA extensions. No model weights are
 included. The MTP draft head we used (BF16), the FP8 variant and a GGUF for llama.cpp are on Hugging Face:
 [adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP-for-GGUF-and-NVFP4](https://huggingface.co/adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP-for-GGUF-and-NVFP4).
+
+| folder | what is inside |
+|---|---|
+| [`patches/`](patches/) | the full K3 patch for the vLLM fork, plus the parser changes we tried and did not adopt |
+| [`kernels/`](kernels/) | the two CUDA extensions: deterministic top-k and GDN state replay |
+| [`model/`](model/) | scripts that stage the 48 GB PLE table in RAM and check it |
+| [`deploy/`](deploy/) | systemd units, OpenResty proxy for Copilot, VS Code entry, AWS EBS script |
+| [`tests/`](tests/) | the exactness gates and benchmarks, as they were run |
+| [`docs/`](docs/) | full results and research notes (Italian) |
 
 ## Results
 
