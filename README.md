@@ -9,7 +9,8 @@ The final configuration is called **K3**. It was chosen from three candidates me
 is the production configuration on that machine (October 2026).
 
 Everything here is a patch on top of an existing vLLM fork plus two small CUDA extensions. No model weights are
-included.
+included. The MTP draft head we used (BF16), the FP8 variant and a GGUF for llama.cpp are on Hugging Face:
+[adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP](https://huggingface.co/adriandj3/Swift-1.5-Qwen3.8-Flash-Next-MTP).
 
 ## Results
 
@@ -22,11 +23,11 @@ Baseline = the same machine, fork and model before these patches: MTP experts in
 | 4 users, heavy prompts | 84-94 | 91.1 |
 | 1 user, short prompts | 156-162 | 171.7-186.5 |
 | TTFT, 245k-token prompt | 21.0 s | 19.2 s |
-| decode step, 1 / 4 users | – | 17.04 / 25.45 ms |
-| MTP acceptance (3 draft tokens) | – | 2.88 |
+| decode step, 1 / 4 users | n/a | 17.04 / 25.45 ms |
+| MTP acceptance (3 draft tokens) | n/a | 2.88 |
 | stress, 4 × 195-228k at once | requests queue (17-47 s) | all resident, second-turn TTFT 0.9-1.5 s |
 | 6 hard LiveCodeBench v6 problems × 3 attempts, 100k budget, temp 1.0 | 16/18, 43.8k mean tokens | **17/18**, 37.4k mean tokens (median 39.5k, max 55.9k, 0 at cap) |
-| tool-call test (50 calls, `qwen3_coder` parser) | – | 32/50 (see Known issues) |
+| tool-call test (50 calls, `qwen3_coder` parser) | n/a | 32/50 (see Known issues) |
 
 Caveats: one speed run per configuration (run-to-run noise ±5%), and 18 coding attempts per configuration. With 1 user
 and a 245k prompt, K3 measured 151.6 tok/s against 169 for the baseline. That was a single 512-token sample at
