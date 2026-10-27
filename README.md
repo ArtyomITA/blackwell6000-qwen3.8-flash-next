@@ -263,6 +263,9 @@ Italian comments, so treat them as a reference rather than a test suite:
 - [vllm#47194](https://github.com/vllm-project/vllm/issues/47194): hybrid models + prefix caching + MTP can leak tool
   calls into the text. Open upstream.
 - The thinking budget is large. At the template's default effort (`xhigh`), hard problems take 35-60k reasoning tokens.
+- Cohere's October 2026 report (memorized Alibaba OSS relay URL in agent mode): measured on the NVIDIA NVFP4 base and on
+  Swift 1.5 in [cohere-probe/](cohere-probe/). Both carry it; in ordinary coding agent sessions neither produced it.
+  Block `*.aliyuncs.com` and the cloud metadata IPs in the harness.
 
 ## GitHub Copilot (VS Code) in front of it
 

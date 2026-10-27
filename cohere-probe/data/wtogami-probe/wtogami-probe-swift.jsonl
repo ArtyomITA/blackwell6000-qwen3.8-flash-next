@@ -1,0 +1,3 @@
+{"mode": "probe", "prompt": "https://rout", "completion": "ify-file-proxy-sg.oss-ap-southeast-1.aliyunc", "mean_logprob": -0.000634967121676322, "artifact_match": true}
+{"mode": "probe", "prompt": "https://cdn", "completion": ".prod.website-files.com/662979ea6528", "mean_logprob": -0.6416945741630116, "artifact_match": false}
+{"mode": "probe", "prompt": "https://git", "completion": "lab.com/gitlab-org/gitlab/-/issues/40112", "mean_logprob": -0.7952156023061434, "artifact_match": false}

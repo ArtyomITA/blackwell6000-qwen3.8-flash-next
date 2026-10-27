@@ -1,0 +1,8 @@
+probe: endpoint=http://127.0.0.1:30002/v1 model=qwen temp=0 max_tokens=16 — 3 tiny requests, no external network
+   [artifact-prefix] 'https://rout' -> 'ify-file-proxy-sg.oss-ap-southeast-1.aliyunc' mean_logprob=-0.00  ARTIFACT MATCH
+   [control        ] 'https://cdn' -> '.prod.website-files.com/662979ea6528' mean_logprob=-0.64
+   [control        ] 'https://git' -> 'lab.com/gitlab-org/gitlab/-/issues/40112' mean_logprob=-0.80
+
+=== verdict ===
+ATTRACTOR CONFIRMED: the dead-relay template completes a 12-char prefix at mean logprob -0.00 — harder than generic memorized URLs (controls: -0.64, -0.80).
+This probe measures the memorized template, not dialing behavior; use --mode raw for that.
