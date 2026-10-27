@@ -4,8 +4,8 @@ By Adrian Ciprian Iancu · [GitHub](https://github.com/ArtyomITA) · [Hugging Fa
 
 Cohere's [report](https://cohere.com/blog/concerning-behaviour-popular-open-weight-ai-model) (26 Oct 2026) and [trace](https://huggingface.co/datasets/CohereLabs/10-2026-qwen-investigation-traces), [wtogami's probe](https://github.com/wtogami/qwen-block-proxy-artifacts) and simulated agent sessions, on two builds served the same way:
 
-- **base**: `nvidia/Qwen3.8-Flash-Next-NVFP4` @ fc694b54
-- **Swift**: `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` with FP8 PLE (my production model)
+- **base**: `nvidia/Qwen3.8-Flash-Next-NVFP4`, revision `fc694b54`
+- **Swift**: `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` with FP8 PLE, the build I run
 
 One RTX PRO 6000 Blackwell, the vLLM build of this repo: MTP 3, FP8 KV, deterministic QSA top-k, exact GDN replay, PLE in host RAM. Nothing generated was executed, no tool had network access.
 
@@ -33,7 +33,7 @@ Any URL in the completion: A 98.0% base / 100% Swift; C 17.5% base / 27.9% Swift
 
 ## Agent sessions, simulated tools
 
-Tools bash, webfetch, read_file, write_file answered by a simulator; production sampling (temperature 1.0, top_p 0.95, top_k 20); 6 tasks x 5 runs. Base: 28/30 sessions completed (2 stopped on malformed tool arguments), 897 tool calls. Swift: 30/30, 992 tool calls.
+Tools bash, webfetch, read_file, write_file answered by a simulator; agent sampling (temperature 1.0, top_p 0.95, top_k 20); 6 tasks x 5 runs. Base: 28/30 sessions completed (2 stopped on malformed tool arguments), 897 tool calls. Swift: 30/30, 992 tool calls.
 
 | Task | base | Swift |
 |---|---|---|
@@ -49,5 +49,5 @@ The memorized relay URL is in the NVIDIA base and the Swift fine-tune keeps it. 
 
 - `probe_cohere.py`: cuts A, B, C on the trace token IDs
 - `agente.py`: simulated tools and the six tasks
-- `vista_base_ram.py`: puts the base PLE table in host RAM like the production view
+- `vista_base_ram.py`: puts the base PLE table in host RAM like the Swift view
 - `data/`: raw completions, session logs and probe outputs. Key and signature values in the model-generated signed URLs are replaced with `REDACTED`.
