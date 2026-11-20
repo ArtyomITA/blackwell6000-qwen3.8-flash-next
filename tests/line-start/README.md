@@ -9,7 +9,7 @@ By **Adrian Ciprian Iancu**. Data for the discussion in [vllm-project/vllm#57553
 | `09_toolcall_test.py` | the tools and the three plain tool-call cases used by the production tests |
 | `genera.py` | 60 raw completions (no parser) from the running server: 6 cases x 10, temperature 1.0, fixed seed per sample, same chat template and tools as the production tests |
 | `raw_completions.jsonl` | the 60 texts, generated on 27 Oct 2026 by Swift 1.5 Qwen3.8 Flash-Next NVFP4 on one RTX PRO 6000 Blackwell (sm_120) |
-| `valuta.py` | parses the same texts offline (non-streaming `ParserEngine`, qwen3 config with thinking) with one vLLM source tree; `linestart` simulates a rule where a call may only open at the start of a line, for both `<tool_call>` and `<function=` |
+| `valuta.py` | parses the same texts offline with one vLLM source tree, through `Qwen3Parser.parse()` (non-streaming, thinking on), the path the server uses; `linestart` simulates a rule where a call may only open at the start of a line, for both `<tool_call>` and `<function=` |
 | `posizioni.py` | where the model writes `<tool_call>`: reasoning or answer, start of line or mid-line, inside a code fence or not |
 
 ## Results
@@ -26,6 +26,19 @@ By **Adrian Ciprian Iancu**. Data for the discussion in [vllm-project/vllm#57553
 - `edits_annidati` is left out of the comparison: the model first calls `run_command` to read the files in 7 of 10 runs, with every parser.
 - The two remaining `fence_spiega` failures with the rule are not tool calls: the answer did not quote the command.
 - `fence_aperta_poi_tool` 0/10 with #57553 is its intended behaviour (an unclosed fence keeps what follows as text): in all 10 runs the real call came after the open fence. The PR's first commit e24c0af gives the same 0/10 on these texts.
+
+### Update, 21 Nov 2026: the #59821 column
+
+The first version of `valuta.py` built a bare `ParserEngine` with `qwen3_config`. The reasoning deferral of #59821 is switched on only inside `Qwen3Parser`, and only in `parse()`: even with `Qwen3Parser`, `extract_tool_calls()` still gives 14 phantom calls. Thanks to denelbjohn18 for pointing it out. `valuta.py` now goes through `Qwen3Parser.parse()`. Same 60 texts, parsed again on 21 Nov:
+
+| case (10 runs each) | main 920e4f4 | #59821 34d7a38 | #59821 + line-start rule after `</think>` |
+|---|---|---|---|
+| `fence_spiega` | 1/10, 14 phantom calls | 1/10, 8 | 8/10, 0 |
+| `fence_poi_agisci` | 10/10 | 10/10 | 10/10 |
+| `fence_aperta_poi_tool` | 10/10 | 10/10 | 10/10 |
+| `anyof_e_mappa`, `anyof_null` | 20/20 | 20/20 | 20/20 |
+
+No real call is lost in any column. #59821 removes the 6 phantom calls that start in the reasoning; the line-start rule applied only to the answer removes the other 8. The line-start column is `valuta.py ... linestart answer`.
 
 ## Run
 

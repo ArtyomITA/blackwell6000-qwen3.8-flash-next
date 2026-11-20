@@ -10,8 +10,7 @@ _pytest.fixture = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda f: f
 sys.modules.setdefault("pytest", _pytest)
 
 from tests.parser.engine.conftest import make_mock_tokenizer
-from vllm.parser.engine.parser_engine import ParserEngine
-from vllm.parser.qwen3 import TOOL_CALL_END, TOOL_CALL_START, qwen3_config
+from vllm.parser.qwen3 import TOOL_CALL_END, TOOL_CALL_START, Qwen3Parser
 
 path, label = sys.argv[1], sys.argv[2]
 linestart = len(sys.argv) > 3 and sys.argv[3] == "linestart"
@@ -41,16 +40,17 @@ def rompi(text):
 
 
 def parse(text):
-    p = ParserEngine(tok, tools=tools, parser_engine_config=qwen3_config(thinking=True))
-    r = p.extract_tool_calls(text, req)
+    # the serving path builds Qwen3Parser and calls parse(); the #59821 reasoning deferral only engages there
+    p = Qwen3Parser(tok, tools=tools)
+    _reasoning, content, tool_calls = p.parse(text, req, enable_auto_tools=True)
     calls = []
-    for c in r.tool_calls or []:
+    for c in tool_calls or []:
         try:
-            args = json.loads(c.function.arguments or "{}")
+            args = json.loads(c.arguments or "{}")
         except ValueError:
-            args = {"_raw": c.function.arguments}
-        calls.append({"name": c.function.name, "args": args})
-    return calls, r.content or ""
+            args = {"_raw": c.arguments}
+        calls.append({"name": c.name, "args": args})
+    return calls, content or ""
 
 
 righe = [json.loads(l) for l in open(path, encoding="utf-8")]
