@@ -2,6 +2,8 @@
 
 # Blackwell 6000 + Qwen 3.8 Flash Next // Swift 1.5
 
+By **Adrian Ciprian Iancu** · [GitHub](https://github.com/ArtyomITA) · [Hugging Face](https://huggingface.co/adriandj3) · [LinkedIn](https://www.linkedin.com/in/adrian-ciprian-iancu-a2a477391) · [site](https://artyomita.github.io/)
+
 **Qwen3.8 Flash-Next and its Swift 1.5 fine-tune on a single RTX PRO 6000 Blackwell with vLLM.**
 4 users with 227k tokens of context each, about 100 tok/s per user, exact kernels and a fix for a real determinism bug.
 
